@@ -1,0 +1,6 @@
+.env
+.pyre/
+*__pycache__*
+data
+test
+/env
