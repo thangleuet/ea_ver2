@@ -1,79 +1,113 @@
-import tensorflow as tf
+import torch
+import torch.nn as nn
+import torch.optim as optim
 import numpy as np
 import pandas as pd
-import os
 from sklearn import metrics, preprocessing
+import os
 import ast
 
-# Ensure TensorFlow 1.x compatibility
-tf.compat.v1.disable_eager_execution()
-
-# Set parameters
-n_steps = 50       # Sequence length
-n_inputs = 11      # Number of input features
-n_outputs = 3      # Number of output classes
-d_model = 64       # Model dimension for Transformer
-n_heads = 8        # Number of attention heads
-d_ff = 256         # Dimension of the feedforward network
-n_layers = 4       # Number of Transformer layers
+# Parameters
+n_steps = 50        # Sequence length
+n_inputs = 11       # Input features
+n_outputs = 3       # Output classes
+d_model = 64        # Embedding/Model dimension
+n_heads = 8         # Number of attention heads
+d_ff = 256          # Feedforward layer size
+n_layers = 4        # Number of Transformer layers
 learning_rate = 0.0001
 n_epochs = 100
+batch_size = 32
 
-# Helper: Positional Encoding Function
-def positional_encoding(seq_len, d_model):
-    pos = np.arange(seq_len)[:, np.newaxis]
-    i = np.arange(d_model)[np.newaxis, :]
-    angle_rates = 1 / np.power(10000, (2 * (i // 2)) / np.float32(d_model))
-    angle_rads = pos * angle_rates
+# Helper: Positional Encoding
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_len=5000):
+        super(PositionalEncoding, self).__init__()
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-np.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0).transpose(0, 1)  # Shape: (max_len, 1, d_model)
+        self.register_buffer('pe', pe)
 
-    # Apply sin to even indices, cos to odd indices
-    sines = np.sin(angle_rads[:, 0::2])
-    cosines = np.cos(angle_rads[:, 1::2])
-    pos_encoding = np.concatenate([sines, cosines], axis=-1)
-    return tf.constant(pos_encoding, dtype=tf.float32)
+    def forward(self, x):
+        x = x + self.pe[:x.size(0), :]
+        return x
 
 # Transformer Encoder Layer
-def transformer_encoder_layer(inputs, num_heads, d_model, d_ff):
-    attn_output = tf.keras.layers.MultiHeadAttention(
-        num_heads=num_heads, key_dim=d_model)(inputs, inputs)
-    out1 = tf.keras.layers.LayerNormalization()(inputs + attn_output)  # Residual connection
+class TransformerEncoder(nn.Module):
+    def __init__(self, d_model, n_heads, d_ff):
+        super(TransformerEncoder, self).__init__()
+        self.attn = nn.MultiheadAttention(d_model, n_heads)
+        self.ff = nn.Sequential(
+            nn.Linear(d_model, d_ff),
+            nn.ReLU(),
+            nn.Linear(d_ff, d_model)
+        )
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
 
-    ff_output = tf.keras.layers.Dense(d_ff, activation='relu')(out1)
-    ff_output = tf.keras.layers.Dense(d_model)(ff_output)
-    out2 = tf.keras.layers.LayerNormalization()(out1 + ff_output)  # Residual connection
+    def forward(self, x):
+        attn_output, _ = self.attn(x, x, x)
+        x = self.norm1(x + attn_output)  # Residual connection
+        ff_output = self.ff(x)
+        x = self.norm2(x + ff_output)    # Residual connection
+        return x
 
-    return out2
+# Full Transformer Model
+class TransformerModel(nn.Module):
+    def __init__(self, n_inputs, n_steps, d_model, n_heads, d_ff, n_layers, n_outputs):
+        super(TransformerModel, self).__init__()
+        self.input_proj = nn.Linear(n_inputs, d_model)
+        self.pos_encoder = PositionalEncoding(d_model)
+        self.transformer_layers = nn.ModuleList([
+            TransformerEncoder(d_model, n_heads, d_ff) for _ in range(n_layers)
+        ])
+        self.global_pool = nn.AdaptiveAvgPool1d(1)
+        self.fc = nn.Linear(d_model, n_outputs)
 
-# Transformer Model Definition
-def build_transformer_model(n_steps, n_inputs, n_outputs, d_model, n_heads, d_ff, n_layers):
-    inputs = tf.keras.Input(shape=(n_steps, n_inputs))
+    def forward(self, x):
+        x = self.input_proj(x)  # (batch_size, n_steps, d_model)
+        x = self.pos_encoder(x.permute(1, 0, 2))  # (n_steps, batch_size, d_model)
 
-    # Add positional encoding
-    pos_encoding = positional_encoding(n_steps, d_model)
-    inputs_encoded = inputs + pos_encoding
+        for layer in self.transformer_layers:
+            x = layer(x)
 
-    # Pass through multiple Transformer layers
-    x = inputs_encoded
-    for _ in range(n_layers):
-        x = transformer_encoder_layer(x, n_heads, d_model, d_ff)
+        x = self.global_pool(x.permute(1, 2, 0)).squeeze(-1)  # (batch_size, d_model)
+        output = self.fc(x)
+        return output
 
-    # Global average pooling and output layer
-    x = tf.keras.layers.GlobalAveragePooling1D()(x)
-    outputs = tf.keras.layers.Dense(n_outputs, activation='softmax')(x)
+# Instantiate the model
+model = TransformerModel(n_inputs, n_steps, d_model, n_heads, d_ff, n_layers, n_outputs)
+print(model)
 
-    model = tf.keras.Model(inputs=inputs, outputs=outputs)
-    return model
+# Loss and optimizer
+criterion = nn.CrossEntropyLoss()
+optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
-# Instantiate the Transformer model
-model = build_transformer_model(n_steps, n_inputs, n_outputs, d_model, n_heads, d_ff, n_layers)
+# Helper: Training loop
+def train_model(model, X_train, y_train, X_val, y_val, n_epochs, batch_size):
+    for epoch in range(n_epochs):
+        model.train()
+        optimizer.zero_grad()
 
-# Compile the model
-model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate),
-              loss='categorical_crossentropy', metrics=['accuracy'])
+        # Forward pass
+        outputs = model(X_train)
+        loss = criterion(outputs, y_train)
+        loss.backward()
+        optimizer.step()
 
-# Print model summary
-model.summary()
+        # Validation
+        model.eval()
+        with torch.no_grad():
+            val_outputs = model(X_val)
+            val_loss = criterion(val_outputs, y_val)
+            val_accuracy = (val_outputs.argmax(1) == y_val.argmax(1)).float().mean().item()
 
+        if epoch % 10 == 0:
+            print(f"Epoch {epoch}, Loss: {loss.item():.4f}, Val Loss: {val_loss.item():.4f}, Val Acc: {val_accuracy:.4f}")
+            
 # Load training data
 csv_files_train = [f for f in os.listdir('data') if f.endswith('.csv')]
 df_raw_train = pd.concat([pd.read_csv(os.path.join('./data', f)) for f in csv_files_train], axis=0)
@@ -208,40 +242,38 @@ def reshape(df, window_size=50, n_inputs=11):
 
 # Apply the reshape function 
 X_train_reshaped = reshape(X_train_scaled)
-
-x_train_all = X_train_reshaped.reshape((X_train_reshaped.shape[0], n_steps, n_inputs))  # Reshape for LSTM
-
-# Split the train data into train and validation
-x_train_input = x_train_all[0:int(x_train_all.shape[0] * 0.8), :]
-x_val_input = x_train_all[int(x_train_all.shape[0] * 0.8):, :]
-y_train_input = y_train[0:int(y_train.shape[0] * 0.8), :]
-y_val_input = y_train[int(y_train.shape[0] * 0.8):, :]
-
+X_train_reshaped = X_train_reshaped.reshape((X_train_reshaped.shape[0], n_steps, n_inputs))  # Reshape for LSTM
 X_test_reshaped = reshape(X_test_scaled)
-x_test = X_test_reshaped.reshape((X_test_reshaped.shape[0], n_steps, n_inputs))
+X_test_reshaped = X_test_reshaped.reshape((X_test_reshaped.shape[0], n_steps, n_inputs))
 
 
-# Training loop (assuming X_train_reshaped and y_train are prepared)
-x_train_input = X_train_reshaped.reshape((-1, n_steps, n_inputs))
-x_val_input = x_train_input[int(0.8 * len(x_train_input)):]
-y_train_input = y_train[:int(0.8 * len(y_train))]
-y_val_input = y_train[int(0.8 * len(y_train)):]
+# Prepare data (assuming X_train, X_test, y_train, y_test are loaded and reshaped)
+X_train_tensor = torch.tensor(X_train_reshaped, dtype=torch.float32)
+y_train_tensor = torch.tensor(np.argmax(y_train, axis=1), dtype=torch.long)
 
-history = model.fit(x_train_input, y_train_input, epochs=n_epochs, batch_size=32,
-                    validation_data=(x_val_input, y_val_input))
+X_val_tensor = X_train_tensor[int(0.8 * len(X_train_tensor)):]
+y_val_tensor = y_train_tensor[int(0.8 * len(y_train_tensor)):]
 
-# Evaluate on the test set
-x_test = X_test_reshaped.reshape((-1, n_steps, n_inputs))
-test_loss, test_accuracy = model.evaluate(x_test, y_test)
-print(f"Test Accuracy: {test_accuracy:.4f}")
+X_train_tensor = X_train_tensor[:int(0.8 * len(X_train_tensor))]
+y_train_tensor = y_train_tensor[:int(0.8 * len(y_train_tensor))]
 
-# Predict and generate crosstab
-y_test_pred = model.predict(x_test)
-y_test_pred_classes = np.argmax(y_test_pred, axis=1)
-y_test_true_classes = np.argmax(y_test, axis=1)
+X_test_tensor = torch.tensor(X_test_reshaped, dtype=torch.float32)
+y_test_tensor = torch.tensor(np.argmax(y_test, axis=1), dtype=torch.long)
 
-crosstab_result = pd.crosstab(y_test_true_classes, y_test_pred_classes,
-                              rownames=['True Label'], colnames=['Predicted Label'])
+# Train the model
+train_model(model, X_train_tensor, y_train_tensor, X_val_tensor, y_val_tensor, n_epochs, batch_size)
 
-print("Crosstab of True vs Predicted Labels:")
-print(crosstab_result)
+# Evaluate on test data
+model.eval()
+with torch.no_grad():
+    test_outputs = model(X_test_tensor)
+    test_preds = test_outputs.argmax(1)
+    test_accuracy = (test_preds == y_test_tensor).float().mean().item()
+
+    print(f'Test Accuracy: {test_accuracy:.4f}')
+
+    # Crosstab of predictions vs true labels
+    crosstab_result = pd.crosstab(y_test_tensor.numpy(), test_preds.numpy(),
+                                  rownames=['True Label'], colnames=['Predicted Label'])
+    print("Crosstab of True vs Predicted Labels:")
+    print(crosstab_result)
