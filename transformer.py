@@ -8,16 +8,16 @@ import os
 import ast
 
 # Parameters
-n_steps = 50        # Sequence length
+n_steps = 48        # Sequence length
 n_inputs = 11       # Input features
 n_outputs = 3       # Output classes
-d_model = 64        # Embedding/Model dimension
+d_model = 128        # Embedding/Model dimension
 n_heads = 8         # Number of attention heads
 d_ff = 256          # Feedforward layer size
 n_layers = 4        # Number of Transformer layers
 learning_rate = 0.0001
-n_epochs = 100
-batch_size = 32
+n_epochs = 200
+batch_size = 64
 
 # Helper: Positional Encoding
 class PositionalEncoding(nn.Module):
@@ -87,7 +87,8 @@ criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
 # Helper: Training loop
-def train_model(model, X_train, y_train, X_val, y_val, n_epochs, batch_size):
+def train_model(model, X_train, y_train, X_val, y_val, n_epochs, model_save_path):
+    best_val_accuracy = 0.0
     for epoch in range(n_epochs):
         model.train()
         optimizer.zero_grad()
@@ -103,10 +104,17 @@ def train_model(model, X_train, y_train, X_val, y_val, n_epochs, batch_size):
         with torch.no_grad():
             val_outputs = model(X_val)
             val_loss = criterion(val_outputs, y_val)
-            val_accuracy = (val_outputs.argmax(1) == y_val.argmax(1)).float().mean().item()
+            val_accuracy =  (val_outputs.argmax(1) == y_val).float().mean().item()
+
+            # Save the model if the validation accuracy improves
+            if val_accuracy > best_val_accuracy:
+                best_val_accuracy = val_accuracy
+                torch.save(model.state_dict(), model_save_path)
+                print(f"New best model saved with Val Accuracy: {val_accuracy:.4f}")
 
         if epoch % 10 == 0:
             print(f"Epoch {epoch}, Loss: {loss.item():.4f}, Val Loss: {val_loss.item():.4f}, Val Acc: {val_accuracy:.4f}")
+            torch.save(model.state_dict(), f"weights/model_transformer_epoch_{epoch}.pt")
             
 # Load training data
 csv_files_train = [f for f in os.listdir('data') if f.endswith('.csv')]
@@ -117,6 +125,34 @@ train = df_raw_train[100:]
 csv_files_test = [f for f in os.listdir('test') if f.endswith('.csv')]
 df_raw_test = pd.concat([pd.read_csv(os.path.join('./test', f)) for f in csv_files_test], axis=0)
 test = df_raw_test[100:]
+
+def calculate_rsi(prices, window=14):
+    delta = prices.diff()
+    gain = np.where(delta > 0, delta, 0)
+    loss = np.where(delta < 0, -delta, 0)
+    avg_gain = pd.Series(gain).rolling(window=window, min_periods=1).mean()
+    avg_loss = pd.Series(loss).rolling(window=window, min_periods=1).mean()
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
+# WMA calculation
+def calculate_wma(prices, window=14):
+    weights = np.arange(1, window + 1)
+    wma = prices.rolling(window=window).apply(lambda prices: np.dot(prices, weights) / weights.sum(), raw=True)
+    return wma
+
+# PSI calculation (Price Strength Indicator, similar to RSI, but can have variations)
+def calculate_psi(prices, window=14):
+    price_change = prices.diff()
+    up_strength = price_change.where(price_change > 0, 0)
+    down_strength = abs(price_change.where(price_change < 0, 0))
+    
+    up_strength_sum = up_strength.rolling(window=window).sum()
+    down_strength_sum = down_strength.rolling(window=window).sum()
+    
+    psi = up_strength_sum / (up_strength_sum + down_strength_sum) * 100
+    return psi
 
 # Function to create features and labels
 def create_feature_label(df_ori):
@@ -137,6 +173,9 @@ def create_feature_label(df_ori):
     df['number_pullback'] = 0
     df['kill_zone'] = 0
     first_index = df_ori.index[0]
+
+    # df['RSI'] = rsi(df['Close'])
+    # df['PSI'] = psi(df)
 
     # Iterate through each row
     for i in df_ori.index:
@@ -173,15 +212,51 @@ def create_feature_label(df_ori):
         rising_count = (df.Close.loc[max(first_index, i - 9):i + 1].diff().gt(0).sum())
         df.at[i, 'ct_rising'] = rising_count
 
+        # df.at[i, 'RSI'] = calculate_rsi(df.Close[first_index:i + 1], window=14).iloc[-1]
+        # df.at[i, 'PSI'] = calculate_psi(df.Close[first_index:i + 1], window=14).iloc[-1]
+        # df.at[i, 'WMA'] = calculate_wma(df.Close[first_index:i + 1], window=14).iloc[-1]
+
         if i + 24 < df_length:
-            max_high = df.High.loc[i + 1:i + 25].max()
-            min_low = df.Low.loc[i + 1:i + 25].min()
+            high_window = df.High.loc[i + 1:i + 25]
+            low_window = df.Low.loc[i + 1:i + 25]
+
+            max_high = high_window.max()  # Max High in next 24 days
+            min_low = low_window.min()    # Min Low in next 24 days
             close_price = df.Close.loc[i]
 
-            if (max_high - close_price > 15) and (close_price - min_low < 5):
-                df.at[i, 'label'] = 1
-            elif (max_high - close_price < 5) and (close_price - min_low > 15):
-                df.at[i, 'label'] = 0
+            max_high_index = high_window.idxmax()
+            min_low_index = low_window.idxmin()
+
+
+            # if (max_high - close_price > 15) and (close_price - min_low < 5):
+            #     df.at[i, 'label'] = 1
+            # elif (max_high - close_price < 5) and (close_price - min_low > 15):
+            #     df.at[i, 'label'] = 0
+            if (max_high - close_price > 15) and (close_price - min_low > 15):
+                if max_high_index < min_low_index:
+                    min_low_small =  df.Low.loc[i + 1:max_high_index].min()
+                    if close_price - min_low_small < 5:
+                        df.at[i, 'label'] = 1
+                    else:
+                        df.at[i, 'label'] = 2
+                else:
+                    max_high_small = df.Low.loc[i + 1:min_low_index].max()
+                    if max_high_small - close_price < 5:
+                        df.at[i, 'label'] = 0
+                    else:
+                        df.at[i, 'label'] = 2
+            elif (max_high - close_price > 15) and (close_price - min_low <= 15):
+                min_low_small =  df.Low.loc[i + 1:max_high_index].min()
+                if close_price - min_low_small < 5:
+                    df.at[i, 'label'] = 1
+                else:
+                    df.at[i, 'label'] = 2
+            elif (max_high - close_price <= 15) and (close_price - min_low > 15):
+                max_high_small = df.Low.loc[i + 1:min_low_index].max()
+                if max_high_small - close_price < 5:
+                    df.at[i, 'label'] = 0
+                else:
+                    df.at[i, 'label'] = 2
             else:
                 df.at[i, 'label'] = 2
         else:
@@ -227,13 +302,13 @@ X_test_scaled = pd.DataFrame(preprocessing.scale(X_test))
 X_test_scaled.columns = col_for_x
 
 # One-hot encode labels
-y_train = y_train[:-50]
-y_test = y_test[:-50]
+y_train = y_train[:-n_steps]
+y_test = y_test[:-n_steps]
 y_train = pd.get_dummies(y_train).values
 y_test = pd.get_dummies(y_test).values
 
 # Define a function for reshaping
-def reshape(df, window_size=50, n_inputs=11):
+def reshape(df, window_size=48, n_inputs=11):
     df_as_array = np.array(df)
     temp = np.array([np.arange(i - window_size, i) for i in range(window_size, df.shape[0])])
     new_df = df_as_array[temp[0:len(temp)]]
@@ -261,19 +336,52 @@ X_test_tensor = torch.tensor(X_test_reshaped, dtype=torch.float32)
 y_test_tensor = torch.tensor(np.argmax(y_test, axis=1), dtype=torch.long)
 
 # Train the model
-train_model(model, X_train_tensor, y_train_tensor, X_val_tensor, y_val_tensor, n_epochs, batch_size)
+folder_model = 'weights'
+if not os.path.exists(folder_model):
+    os.makedirs(folder_model)
+model_save_path = os.path.join(folder_model, 'model_transformer.pt')
+# train_model(model, X_train_tensor, y_train_tensor, X_val_tensor, y_val_tensor, n_epochs, model_save_path)
 
 # Evaluate on test data
+model.load_state_dict(torch.load(model_save_path))
 model.eval()
+# with torch.no_grad():
+#     test_outputs = model(X_test_tensor)
+#     test_preds = test_outputs.argmax(1)
+#     test_accuracy = (test_preds == y_test_tensor).float().mean().item()
+
+#     print(f'Test Accuracy: {test_accuracy:.4f}')
+
+#     # Crosstab of predictions vs true labels
+#     crosstab_result = pd.crosstab(y_test_tensor.numpy(), test_preds.numpy(),
+#                                   rownames=['True Label'], colnames=['Predicted Label'])
+#     print("Crosstab of True vs Predicted Labels:")
+#     print(crosstab_result)
+
 with torch.no_grad():
+    # Get model outputs
     test_outputs = model(X_test_tensor)
-    test_preds = test_outputs.argmax(1)
-    test_accuracy = (test_preds == y_test_tensor).float().mean().item()
+    
+    # Apply softmax to get probabilities
+    probabilities = torch.nn.functional.softmax(test_outputs, dim=1)
+    
+    # Get the predicted labels and their corresponding confidence
+    confidences, test_preds = probabilities.max(dim=1)
+    
+    # Filter predictions with confidence > 0.9
+    confident_mask = confidences > 0.9
+    confident_preds = test_preds[confident_mask]
+    confident_labels = y_test_tensor[confident_mask]
+    
+    # Calculate accuracy only for confident predictions
+    test_accuracy = (confident_preds == confident_labels).float().mean().item()
 
-    print(f'Test Accuracy: {test_accuracy:.4f}')
+    print(f'Test Accuracy (Confidence > 0.9): {test_accuracy:.4f}')
 
-    # Crosstab of predictions vs true labels
-    crosstab_result = pd.crosstab(y_test_tensor.numpy(), test_preds.numpy(),
-                                  rownames=['True Label'], colnames=['Predicted Label'])
-    print("Crosstab of True vs Predicted Labels:")
+    # Crosstab of predictions vs true labels (for confident predictions)
+    crosstab_result = pd.crosstab(
+        confident_labels.numpy(), confident_preds.numpy(),
+        rownames=['True Label'], colnames=['Predicted Label']
+    )
+    print("Crosstab of True vs Predicted Labels (Confidence > 0.8):")
     print(crosstab_result)
