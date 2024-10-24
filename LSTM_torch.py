@@ -20,17 +20,19 @@ n_outputs = 3     # Number of output classes
 
 learning_rate = 0.0001
 batch_size = 128
-n_epochs = 400
+n_epochs = 300
 
 # Load training data
 csv_files_train = [f for f in os.listdir('data') if f.endswith('.csv')]
 df_raw_train = pd.concat([pd.read_csv(os.path.join('./data', f)) for f in csv_files_train], axis=0)
 train = df_raw_train[100:]
+train = train.loc[~train.index.duplicated(keep='first')].reset_index(drop=True)
 
 # Load test data
 csv_files_test = [f for f in os.listdir('test') if f.endswith('.csv')]
 df_raw_test = pd.concat([pd.read_csv(os.path.join('./test', f)) for f in csv_files_test], axis=0)
 test = df_raw_test[100:]
+test = test.loc[~test.index.duplicated(keep='first')].reset_index(drop=True)
 
 # Function to create features and labels (same logic as original)
 def create_feature_label(df_ori):
@@ -58,20 +60,17 @@ def create_feature_label(df_ori):
     l = df_ori['Low'].values
     v = df_ori['volume'].astype(float).values
 
-
-    df['RSI'] = ta.rsi(close=pd.Series(c), length=14)
-
     for i in df_ori.index:
-        # Kill zone calculation
+        # Kill zone
         date_time = pd.to_datetime(df.Date.loc[i])
         hour = date_time.hour
-        if 0 <= hour <= 5:
+        if hour >= 0 and hour <= 5:
             df.at[i, 'kill_zone'] = 1
-        elif 7 <= hour <= 10:
+        elif hour >= 7 and hour <= 10:
             df.at[i, 'kill_zone'] = 2
-        elif 12 <= hour <= 15:
+        elif hour >= 12 and hour <= 15:
             df.at[i, 'kill_zone'] = 3
-        elif 18 <= hour <= 20:
+        elif hour >= 18 and hour <= 20:
             df.at[i, 'kill_zone'] = 4
         else:
             df.at[i, 'kill_zone'] = 0
@@ -94,9 +93,9 @@ def create_feature_label(df_ori):
         rising_count = df.Close.loc[max(first_index, i - 9):i + 1].diff().gt(0).sum()
         df.at[i, 'ct_rising'] = rising_count
 
-        if i + 24 < df_length:
-            high_window = df.High.loc[i + 1:i + 25]
-            low_window = df.Low.loc[i + 1:i + 25]
+        if i + 14 < df_length:
+            high_window = df.High.loc[i - 10:i + 14]
+            low_window = df.Low.loc[i - 10:i + 14]
 
             max_high = high_window.max()  # Max High in next 24 days
             min_low = low_window.min()    # Min Low in next 24 days
@@ -105,35 +104,40 @@ def create_feature_label(df_ori):
             max_high_index = high_window.idxmax()
             min_low_index = low_window.idxmin()
 
-            if (max_high - close_price > 15) and (close_price - min_low < 5):
-                df.at[i, 'label'] = 1
-            elif (max_high - close_price < 5) and (close_price - min_low > 15):
-                df.at[i, 'label'] = 0
-            # if (max_high - close_price > 15) and (close_price - min_low > 15):
-            #     if max_high_index < min_low_index:
-            #         min_low_small =  df.Low.loc[i + 1:max_high_index].min()
-            #         if close_price - min_low_small < 5:
-            #             df.at[i, 'label'] = 1
-            #         else:
-            #             df.at[i, 'label'] = 2
-            #     else:
-            #         max_high_small = df.Low.loc[i + 1:min_low_index].max()
-            #         if max_high_small - close_price < 5:
-            #             df.at[i, 'label'] = 0
-            #         else:
-            #             df.at[i, 'label'] = 2
-            # elif (max_high - close_price > 15) and (close_price - min_low <= 15):
-            #     min_low_small =  df.Low.loc[i + 1:max_high_index].min()
-            #     if close_price - min_low_small < 5:
-            #         df.at[i, 'label'] = 1
-            #     else:
-            #         df.at[i, 'label'] = 2
-            # elif (max_high - close_price <= 15) and (close_price - min_low > 15):
-            #     max_high_small = df.Low.loc[i + 1:min_low_index].max()
-            #     if max_high_small - close_price < 5:
-            #         df.at[i, 'label'] = 0
-            #     else:
-            #         df.at[i, 'label'] = 2
+            # if max_high_index == i:
+            #     df.at[i, 'label'] = 0
+            # elif min_low_index == i:
+            #     df.at[i, 'label'] = 1
+
+            # if (max_high - close_price > 15) and (close_price - min_low < 5):
+            #     df.at[i, 'label'] = 1
+            # elif (max_high - close_price < 5) and (close_price - min_low > 15):
+            #     df.at[i, 'label'] = 0
+            if (max_high - close_price > 15) and (close_price - min_low > 15):
+                if max_high_index < min_low_index:
+                    min_low_small =  df.Low.loc[i + 1:max_high_index].min()
+                    if close_price - min_low_small < 5:
+                        df.at[i, 'label'] = 1
+                    else:
+                        df.at[i, 'label'] = 2
+                else:
+                    max_high_small = df.Low.loc[i + 1:min_low_index].max()
+                    if max_high_small - close_price < 5:
+                        df.at[i, 'label'] = 0
+                    else:
+                        df.at[i, 'label'] = 2
+            elif (max_high - close_price > 15) and (close_price - min_low <= 15):
+                min_low_small =  df.Low.loc[i + 1:max_high_index].min()
+                if close_price - min_low_small < 5:
+                    df.at[i, 'label'] = 1
+                else:
+                    df.at[i, 'label'] = 2
+            elif (max_high - close_price <= 15) and (close_price - min_low > 15):
+                max_high_small = df.Low.loc[i + 1:min_low_index].max()
+                if max_high_small - close_price < 5:
+                    df.at[i, 'label'] = 0
+                else:
+                    df.at[i, 'label'] = 2
             else:
                 df.at[i, 'label'] = 2
         else:
@@ -160,8 +164,7 @@ def reshape(df, window_size=50, n_inputs=11):
     df_as_array = np.array(df)
     temp = np.array([np.arange(i - window_size, i) for i in range(window_size, df.shape[0])])
     new_df = df_as_array[temp[0:len(temp)]]
-    new_df2 = new_df.reshape(len(temp), n_inputs * window_size)
-    return new_df2    
+    return new_df    
 
 def inference(model, df_row, scaler, window_size=50):
     """
@@ -215,17 +218,15 @@ scaler = preprocessing.StandardScaler()
 X_train_scaled = scaler.fit_transform(X_train)
 X_test_scaled = scaler.transform(X_test)
 
-y_train = y_train[:-50]
-y_test = y_test[:-50]
+y_train = y_train[n_steps:]
+y_test = y_test[n_steps:]
 # One-hot encode labels
 y_train = pd.get_dummies(y_train).values
 y_test = pd.get_dummies(y_test).values
 
-X_train_reshaped = reshape(X_train_scaled)
-x_train_all = X_train_reshaped.reshape((X_train_reshaped.shape[0], n_steps, n_inputs))
+x_train_all = reshape(X_train_scaled)
 
-X_test_reshaped = reshape(X_test_scaled)
-x_test_all = X_test_reshaped.reshape((X_test_reshaped.shape[0], n_steps, n_inputs))
+x_test_all = reshape(X_test_scaled)
 
 # Convert to PyTorch tensors
 x_train_tensor = torch.tensor(x_train_all, dtype=torch.float32).to(device)
@@ -255,23 +256,26 @@ criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
 best_loss = float('inf')
-MODEL_PATH = "lstm_model.pth"
+folder_path = 'weights'
+if not os.path.exists(folder_path):
+    os.makedirs(folder_path)
+MODEL_PATH =   os.path.join(folder_path, 'model_lstm.pt')
 
 # Training loop
-# for epoch in range(n_epochs):
-#     model.train()
-#     for X_batch, y_batch in train_loader:
-#         optimizer.zero_grad()
-#         outputs = model(X_batch)
-#         loss = criterion(outputs, torch.argmax(y_batch, dim=1))
-#         loss.backward()
-#         optimizer.step()
+for epoch in range(n_epochs):
+    model.train()
+    for X_batch, y_batch in train_loader:
+        optimizer.zero_grad()
+        outputs = model(X_batch)
+        loss = criterion(outputs, torch.argmax(y_batch, dim=1))
+        loss.backward()
+        optimizer.step()
 
-#     if epoch % 10 == 0:
-#         print(f'Epoch {epoch}, Loss: {loss.item():.4f}')
-#         if loss.item() < best_loss:
-#             best_loss = loss.item()
-#             torch.save(model.state_dict(), MODEL_PATH)
+    if epoch % 10 == 0:
+        print(f'Epoch {epoch}, Loss: {loss.item():.4f}')
+        if loss.item() < best_loss:
+            best_loss = loss.item()
+            torch.save(model.state_dict(), MODEL_PATH)
         
 
 # Evaluate the model
