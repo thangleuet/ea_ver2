@@ -149,6 +149,8 @@ model_random_forest = RandomForest(X_train, y_train, X_test, y_test)
 model_random_forest.train()
 model_random_forest.test()
 
+print("=============================================================")
+
 # CNN
 model_cnn = CNNModel(X_train, y_train, X_test, y_test)
 model_cnn.train_model(num_epochs=50)

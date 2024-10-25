@@ -28,9 +28,9 @@ class CNN(nn.Module):
 
 class CNNModel():
     def __init__(self, X_train, y_train, X_test, y_test):
-        self.x_train = torch.tensor(np.array(X_train), dtype=torch.float32).permute(0, 2, 1)  # Reshape for CNN
-        self.y_train = torch.tensor(np.array(X_test), dtype=torch.float32).permute(0, 2, 1)
-        self.x_test = torch.tensor(np.array(y_train), dtype=torch.long)
+        self.x_train = torch.tensor(np.array(X_train).reshape(X_train.shape[0], X_train.shape[1], 1), dtype=torch.float32).permute(0, 2, 1)
+        self.y_train = torch.tensor(np.array(y_train), dtype=torch.long)
+        self.x_test = torch.tensor(np.array(X_test).reshape(X_test.shape[0], X_test.shape[1], 1), dtype=torch.float32).permute(0, 2, 1)
         self.y_test = torch.tensor(np.array(y_test), dtype=torch.long)
         
         # Create DataLoader
