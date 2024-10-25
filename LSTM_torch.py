@@ -8,6 +8,7 @@ import torch.optim as optim
 from sklearn import preprocessing, metrics
 from torch.utils.data import DataLoader, TensorDataset
 import pandas_ta as ta
+from sklearn.utils.class_weight import compute_class_weight
 
 # Set device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -33,6 +34,27 @@ csv_files_test = [f for f in os.listdir('test') if f.endswith('.csv')]
 df_raw_test = pd.concat([pd.read_csv(os.path.join('./test', f)) for f in csv_files_test], axis=0)
 test = df_raw_test[100:]
 test = test.loc[~test.index.duplicated(keep='first')].reset_index(drop=True)
+
+def get_sample_weights(y):
+    """
+    calculate the sample weights based on class weights. Used for models with
+    imbalanced data and one hot encoding prediction.
+
+    params:
+        y: class labels as integers
+    """
+
+    y = y.astype(int)  # compute_class_weight needs int labels
+    class_weights = compute_class_weight('balanced' , np.unique(y), y)
+    
+    print("real class weights are {}".format(class_weights), np.unique(y))
+    print("value_counts", np.unique(y, return_counts=True))
+    sample_weights = y.copy().astype(float)
+    for i in np.unique(y):
+        sample_weights[sample_weights == i] = class_weights[i]  # if i == 2 else 0.8 * class_weights[i]
+        # sample_weights = np.where(sample_weights == i, class_weights[int(i)], y_)
+
+    return sample_weights
 
 # Function to create features and labels (same logic as original)
 def create_feature_label(df_ori):
@@ -93,9 +115,11 @@ def create_feature_label(df_ori):
         rising_count = df.Close.loc[max(first_index, i - 9):i + 1].diff().gt(0).sum()
         df.at[i, 'ct_rising'] = rising_count
 
-        if i + 14 < df_length:
-            high_window = df.High.loc[i - 10:i + 14]
-            low_window = df.Low.loc[i - 10:i + 14]
+        if i + 13 < df_length and i - first_index > 12:
+            window_begin = i-12
+            window_end = i+13
+            high_window = df.High.loc[i - 12:i + 13]
+            low_window = df.Low.loc[i - 12:i + 13]
 
             max_high = high_window.max()  # Max High in next 24 days
             min_low = low_window.min()    # Min Low in next 24 days
@@ -103,6 +127,18 @@ def create_feature_label(df_ori):
 
             max_high_index = high_window.idxmax()
             min_low_index = low_window.idxmin()
+
+            window_middle = int((window_begin + window_end) / 2)
+            min_after = df.Close.loc[max_high_index : window_end].min()
+            max_after = df.Close.loc[min_low_index : window_end].max()
+
+            if max_high_index == window_middle and max_high - min_after > 10:
+                df.at[i, 'label'] = 0
+            elif min_low_index == window_middle and max_after - min_low < 10:
+                df.at[i, 'label'] = 1
+            else:
+                df.at[i, 'label'] = 2
+            
 
             # if max_high_index == i:
             #     df.at[i, 'label'] = 0
@@ -113,33 +149,33 @@ def create_feature_label(df_ori):
             #     df.at[i, 'label'] = 1
             # elif (max_high - close_price < 5) and (close_price - min_low > 15):
             #     df.at[i, 'label'] = 0
-            if (max_high - close_price > 15) and (close_price - min_low > 15):
-                if max_high_index < min_low_index:
-                    min_low_small =  df.Low.loc[i + 1:max_high_index].min()
-                    if close_price - min_low_small < 5:
-                        df.at[i, 'label'] = 1
-                    else:
-                        df.at[i, 'label'] = 2
-                else:
-                    max_high_small = df.Low.loc[i + 1:min_low_index].max()
-                    if max_high_small - close_price < 5:
-                        df.at[i, 'label'] = 0
-                    else:
-                        df.at[i, 'label'] = 2
-            elif (max_high - close_price > 15) and (close_price - min_low <= 15):
-                min_low_small =  df.Low.loc[i + 1:max_high_index].min()
-                if close_price - min_low_small < 5:
-                    df.at[i, 'label'] = 1
-                else:
-                    df.at[i, 'label'] = 2
-            elif (max_high - close_price <= 15) and (close_price - min_low > 15):
-                max_high_small = df.Low.loc[i + 1:min_low_index].max()
-                if max_high_small - close_price < 5:
-                    df.at[i, 'label'] = 0
-                else:
-                    df.at[i, 'label'] = 2
-            else:
-                df.at[i, 'label'] = 2
+            # if (max_high - close_price > 15) and (close_price - min_low > 15):
+            #     if max_high_index < min_low_index:
+            #         min_low_small =  df.Low.loc[i + 1:max_high_index].min()
+            #         if close_price - min_low_small < 5:
+            #             df.at[i, 'label'] = 1
+            #         else:
+            #             df.at[i, 'label'] = 2
+            #     else:
+            #         max_high_small = df.Low.loc[i + 1:min_low_index].max()
+            #         if max_high_small - close_price < 5:
+            #             df.at[i, 'label'] = 0
+            #         else:
+            #             df.at[i, 'label'] = 2
+            # elif (max_high - close_price > 15) and (close_price - min_low <= 15):
+            #     min_low_small =  df.Low.loc[i + 1:max_high_index].min()
+            #     if close_price - min_low_small < 5:
+            #         df.at[i, 'label'] = 1
+            #     else:
+            #         df.at[i, 'label'] = 2
+            # elif (max_high - close_price <= 15) and (close_price - min_low > 15):
+            #     max_high_small = df.Low.loc[i + 1:min_low_index].max()
+            #     if max_high_small - close_price < 5:
+            #         df.at[i, 'label'] = 0
+            #     else:
+            #         df.at[i, 'label'] = 2
+            # else:
+            #     df.at[i, 'label'] = 2
         else:
             df.at[i, 'label'] = 2
 
