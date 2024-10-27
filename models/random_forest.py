@@ -3,7 +3,7 @@ import pandas as pd
 from sklearn import metrics
 
 class RandomForest():
-    def __init__(self, x_train, y_train, x_test, y_test):
+    def __init__(self, x_train, y_train, x_test, y_test, list_features):
         self.x_train = x_train
         self.y_train = y_train
         self.x_test = x_test

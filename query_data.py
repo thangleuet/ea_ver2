@@ -1,7 +1,7 @@
 import sys
 import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import pandas as pd
-import tqdm
 from sqlalchemy import create_engine
 
 DB_HOST = "42.96.41.209"
@@ -9,8 +9,8 @@ DB_USER = "xttrade"
 DB_PASSWORD ="Xttrade1234$"
 DB_NAME = "XTTRADE"
 
-start_time_format = "2020-01-01 00:00:00"
-end_time_format = "2021-01-01 00:00:00"
+start_time_format = "2023-01-01 00:00:00"
+end_time_format = "2024-01-01 00:00:00"
 name_database = "exness_xau_usd_h1"
 sql_query = f"""
     SELECT id, date_time as Date, open as Open, high as High, low as Low, close as Close,
